@@ -16,7 +16,7 @@ Moondream is a VLM system that provides image understanding capabilities through
 
 ```bash
 # Build the Docker image
-docker build -t moondream .
+docker build -t moondream_server .
 ```
 
 ### Running the Server
