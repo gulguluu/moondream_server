@@ -1,3 +1,4 @@
+# Moondream Server
 # Moondream: VLM Server and Client
 
 Moondream is a VLM system that provides image understanding capabilities through a server API and client libraries. This repository contains the server implementation and demo client for interacting with the Moondream API.
