@@ -33,7 +33,7 @@ docker run --rm -it \
   -v $PWD/data:/data \
   -v $HOME/.cache/huggingface:/root/.cache/huggingface \
   -e PORT=8000 \
-  -e WORKERS=1 \
+  -e =1 \
   -e REQUEST_BATCH_SIZE=32 \
   -e MAX_BATCH_SIZE=16 \
   moondream_server
@@ -65,7 +65,7 @@ TORCH_COMPILE=true
 OMP_NUM_THREADS=28
 HOST="0.0.0.0"
 PORT=8000
-WORKERS=1
+=1
 REQUEST_BATCH_SIZE=32
 MAX_BATCH_SIZE=16
 DEVICE_ID=0
@@ -178,7 +178,7 @@ results = wait_for_batch_completion(url, job_id)
 |----------|---------|-------------|
 | `PORT` | `8000` | Server port |
 | `HOST` | `0.0.0.0` | Server host |
-| `WORKERS` | `16` | Number of FastAPI worker processes |
+| `WORKERS` | `1` | Number of FastAPI worker processes |
 | `GRACEFUL_TIMEOUT` | `120` | Graceful shutdown timeout (seconds) |
 | `KEEP_ALIVE` | `120` | Keep-alive timeout (seconds) |
 | `MAX_REQUESTS` | `10000` | Maximum requests per worker |
