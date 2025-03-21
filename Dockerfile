@@ -36,14 +36,15 @@ ENV ONEAPI_DEVICE_SELECTOR="level_zero:0" \
     ENABLE_SDP_FUSION=1 \
     HOST="0.0.0.0" \
     PORT=8000 \
-    WORKERS=64 \
+    WORKERS=1 \
     REQUEST_BATCH_SIZE=32 \
     MAX_BATCH_SIZE=16 \
     DEVICE_ID=0 \
     BF16_MODE=true \
-    MODEL_CACHE_DIR=/tmp/model_cache
+    MODEL_CACHE_DIR=/root/.cache/huggingface \
+    MOONDREAM_ENABLE_OPTIMIZATION=1
 
-RUN install -d -m 777 /tmp/ipex_cache /tmp/torch_cache /tmp/model_cache
+RUN install -d -m 777 /tmp/ipex_cache /tmp/torch_cache /root/.cache/huggingface
 
 COPY backend.py server.py ./
 

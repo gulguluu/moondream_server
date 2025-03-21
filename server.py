@@ -14,8 +14,15 @@ import intel_extension_for_pytorch as ipex  # noqa
 import psutil
 import torch
 import uvicorn
-from fastapi import (BackgroundTasks, FastAPI, File, Form, HTTPException,
-                     Query, UploadFile)
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
@@ -50,7 +57,7 @@ MODEL_ID = os.getenv("MODEL_ID", "vikhyatk/moondream2")
 REVISION = os.getenv("REVISION", None)
 DEVICE_ID = int(os.getenv("DEVICE_ID", "0"))
 BF16_MODE = os.getenv("BF16_MODE", "true").lower() in ["true", "1", "yes"]
-CACHE_DIR = os.getenv("MODEL_CACHE_DIR", None)
+CACHE_DIR = os.getenv("MODEL_CACHE_DIR", "/root/.cache/huggingface")
 
 REQUEST_BATCH_SIZE = int(
     os.getenv("REQUEST_BATCH_SIZE", "16")
@@ -58,7 +65,9 @@ REQUEST_BATCH_SIZE = int(
 MAX_BATCH_SIZE = int(
     os.getenv("MAX_BATCH_SIZE", "8")
 )  # Maximum batch size for model inference
-WORKERS = int(os.getenv("WORKERS", 16)) # number of workers that the fastapi server should use
+WORKERS = int(
+    os.getenv("WORKERS", 1)
+)  # number of workers that the fastapi server should use
 MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "4"))  # Parallel processing threads
 BATCH_TIMEOUT = float(os.getenv("BATCH_TIMEOUT", "0.1"))  # Seconds to wait for batching
 WORKER_TIMEOUT = int(os.getenv("WORKER_TIMEOUT", "300"))  # Worker timeout in seconds
@@ -726,6 +735,7 @@ async def process_batch_efficiently(operations, images):
         torch.xpu.empty_cache()
     return {"results": results, "total_processing_time": total_time}
 
+
 # =========== Routes ============== #
 @app.get("/health")
 async def health_check():
@@ -1305,6 +1315,7 @@ async def batch_process_async(
                     logger.error(f"Job {job_id} was removed during or after processing")
             else:
                 logger.error(f"Job {job_id} not found before starting background task")
+
         background_tasks.add_task(process_and_verify)
         logger.info(f"Added batch job {job_id} to background tasks")
         return {"job_id": job_id, "status": "initializing"}
@@ -1363,7 +1374,7 @@ if __name__ == "__main__":
         "server:app",
         host="0.0.0.0",
         port=int(os.getenv("PORT", "8000")),
-        workers=min(WORKERS, multiprocessing.cpu_count()),  # Optimal number of server workers
+        workers=WORKERS,  # Number of server workers (1 for 1 GPU - no multiple GPU load balancing)
         limit_concurrency=BACKLOG,  # Limit concurrent connections
         timeout_keep_alive=KEEP_ALIVE,  # Keep-alive timeout
         backlog=BACKLOG,  # Connection queue size

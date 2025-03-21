@@ -3,14 +3,14 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import intel_extension_for_pytorch as ipex
 import requests
 import torch
 from loguru import logger
 from PIL import Image
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, PretrainedConfig
 
 logger.remove()
 logger.add(
@@ -96,7 +96,7 @@ class MoondreamEngine:
         cache_dir: Optional[str],
     ):
         """Load and optimize the model with advanced Intel optimizations"""
-        ipex_config = {"level": optimization_level}
+        ipex_config = {"level": optimization_level, "inplace": True}
         logger.info(f"Using IPEX optimization level: {optimization_level}")
         if bf16_mode and self.device.type == "xpu" and torch.xpu.is_bf16_supported():
             logger.info("Using BF16 precision for inference")
@@ -114,7 +114,6 @@ class MoondreamEngine:
         }
         if revision is not None:
             model_kwargs["revision"] = revision
-
         try:
             model = AutoModelForCausalLM.from_pretrained(model_id, **model_kwargs)
         except Exception as e:
@@ -124,15 +123,187 @@ class MoondreamEngine:
                 model_kwargs.pop("revision", None)
                 model = AutoModelForCausalLM.from_pretrained(model_id, **model_kwargs)
             else:
-                raise  # model loading failed
+                raise
         load_time = time.time() - load_start
         logger.info(f"Model loaded in {load_time:.2f}s")
         if self.device.type == "xpu":
-            optimize_start = time.time()
-            logger.info("Applying IPEX optimizations...")
-            model = ipex.optimize(model, dtype=self.dtype, inplace=True, **ipex_config)
-            optimize_time = time.time() - optimize_start
-            logger.info(f"IPEX optimizations applied in {optimize_time:.2f}s")
+            enable_optimization = os.environ.get(
+                "MOONDREAM_ENABLE_OPTIMIZATION", "1"
+            ).lower() in ("1", "true", "yes")
+            if enable_optimization:
+                optimize_start = time.time()
+                logger.info(
+                    "IPEX optimization ENABLED (set MOONDREAM_ENABLE_OPTIMIZATION=0 to disable)"
+                )
+                model = self._apply_component_specific_optimizations(model, ipex_config)
+                optimize_time = time.time() - optimize_start
+                logger.info(f"IPEX optimizations applied in {optimize_time:.2f}s")
+            else:
+                logger.info(
+                    "IPEX optimization DISABLED by environment variable (set MOONDREAM_ENABLE_OPTIMIZATION=1 to enable)"
+                )
+        return model
+
+    def _apply_component_specific_optimizations(self, model, ipex_config):
+        """
+        Apply component-specific optimizations to the model.
+        Falls back gracefully if components are not found or errors occur.
+
+        Args:
+            model: The loaded model
+            ipex_config: IPEX configuration dictionary
+
+        Returns:
+            The model with component-specific optimizations applied where possible
+        """
+        try:
+            logger.info(f"Model Name: {type(model).__name__}")
+            if hasattr(model, "model") and isinstance(model.model, torch.nn.Module):
+                logger.info("Found nested model structure (HfMoondream.model)")
+                target_model = model.model
+            else:
+                logger.info("Using direct model structure")
+                target_model = model
+            if hasattr(target_model, "text") and isinstance(
+                target_model.text, torch.nn.Module
+            ):
+                logger.info(
+                    "Optimizing language model component with ipex.llm.optimize..."
+                )
+                text_model = target_model.text
+                original_config = None
+                if hasattr(text_model, "config"):
+                    if hasattr(text_model.config, "model_type"):
+                        original_config = text_model.config.model_type
+                        text_model.config.model_type = "phi"
+                    else:
+                        text_model.config.model_type = "phi"
+
+                    if (
+                        not hasattr(text_model.config, "architectures")
+                        or not isinstance(text_model.config.architectures, list)
+                        or len(text_model.config.architectures) == 0
+                    ):
+                        text_model.config.architectures = ["PhiForCausalLM"]
+                    if not hasattr(text_model.config, "hidden_size"):
+                        for name, module in text_model.named_modules():
+                            if isinstance(module, torch.nn.Linear):
+                                text_model.config.hidden_size = module.in_features
+                                break
+                else:
+                    text_model.config = PretrainedConfig()
+                    text_model.config.model_type = "phi"
+                    text_model.config.architectures = ["PhiForCausalLM"]
+                added_model_wrapper = False
+                if hasattr(text_model, "blocks") and isinstance(
+                    text_model.blocks, torch.nn.ModuleList
+                ):
+
+                    class ModelWrapper(torch.nn.Module):
+                        def __init__(self, blocks):
+                            super().__init__()
+                            self.layers = blocks
+
+                    text_model.model = ModelWrapper(text_model.blocks)
+                    added_model_wrapper = True
+
+                try:
+                    target_model.text = ipex.llm.optimize(
+                        target_model.text,
+                        dtype=self.dtype,
+                        device=self.device.type,
+                        inplace=True,
+                    )
+                    logger.info(
+                        "Successfully optimized llm component with llm.optimize"
+                    )
+                    if original_config is not None:
+                        target_model.text.config.model_type = original_config
+                    if added_model_wrapper and hasattr(target_model.text, "model"):
+                        delattr(target_model.text, "model")
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to optimize llm component with ipex.llm.optimize: {str(e)}"
+                    )
+                    if original_config is not None and hasattr(
+                        target_model.text.config, "model_type"
+                    ):
+                        target_model.text.config.model_type = original_config
+                    if added_model_wrapper and hasattr(target_model.text, "model"):
+                        delattr(target_model.text, "model")
+                    logger.info(
+                        "Falling back to standard optimization for this component"
+                    )
+                    try:
+                        target_model.text = ipex.optimize(
+                            target_model.text, dtype=self.dtype, **ipex_config
+                        )
+                        logger.info(
+                            "Successfully optimized with standard ipex.optimize"
+                        )
+                    except Exception as e2:
+                        logger.warning(
+                            f"Failed to optimize llm component with standard ipex.optimize: {str(e2)}"
+                        )
+            else:
+                logger.warning("llm component not found. Skipping LLM optimization.")
+            if hasattr(target_model, "vision") and isinstance(
+                target_model.vision, torch.nn.Module
+            ):
+                try:
+                    target_model.vision = ipex.optimize(
+                        target_model.vision, dtype=self.dtype, **ipex_config
+                    )
+                    logger.info("Successfully optimized vision component")
+                except Exception as e:
+                    logger.warning(f"Failed to optimize vision component: {str(e)}")
+            else:
+                logger.warning(
+                    "Vision component not found. Skipping vision optimization."
+                )
+            if hasattr(target_model, "region") and isinstance(
+                target_model.region, torch.nn.ModuleDict
+            ):
+                try:
+                    for key, component in target_model.region.items():
+                        if isinstance(component, torch.nn.Module) and not isinstance(
+                            component, torch.nn.Parameter
+                        ):
+                            try:
+                                target_model.region[key] = ipex.optimize(
+                                    component, dtype=self.dtype, **ipex_config
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to optimize region component {key}: {str(e)}"
+                                )
+                        elif isinstance(component, torch.nn.ModuleDict):
+                            for sub_key, sub_component in component.items():
+                                try:
+                                    target_model.region[key][sub_key] = ipex.optimize(
+                                        sub_component, dtype=self.dtype, **ipex_config
+                                    )
+                                except Exception as e:
+                                    logger.warning(
+                                        f"Failed to optimize region sub_component {key}.{sub_key}: {str(e)}"
+                                    )
+                    logger.info("Successfully optimized region model components")
+                except Exception as e:
+                    logger.warning(
+                        f"Error during region component optimization: {str(e)}"
+                    )
+            else:
+                logger.warning(
+                    "Region components not found. Skipping region optimization."
+                )
+
+        except Exception as e:
+            logger.warning(f"Error during component-specific optimization: {str(e)}")
+        try:
+            model = ipex.optimize(model, dtype=self.dtype, **ipex_config)
+            logger.info("Successfully applied general IPEX optimization")
+        except Exception as e:
+            logger.warning(f"Failed to apply general IPEX optimization: {str(e)}")
         return model
 
     def _warmup(self, num_warmup_rounds: int = 4):
@@ -259,10 +430,9 @@ class MoondreamEngine:
         timings["query_time"] = query_time
         total_time = time.time() - start_time
         timings["total_time"] = total_time
-
         response = {"answer": result["answer"], "timings": timings}
-        # if self.device.type == "xpu": 
-        #    torch.xpu.empty_cache()
+        if self.device.type == "xpu":
+            torch.xpu.empty_cache()
         return response
 
     def _query_with_encoded_image(

@@ -22,23 +22,22 @@ docker build -t moondream .
 ### Running the Server
 
 ```bash
-# Run the container with default settings
-docker run -p 8000:8000 moondream
-
 # Run with custom configuration
-docker run -p 8000:8000 \
+docker run --rm -it \
+  --privileged \
+  --cap-add=sys_nice \
+  --device=/dev/dri \
+  --ipc=host \
+  --shm-size=1g \
+  --net=host \
+  -v $PWD/data:/data \
+  -v $HOME/.cache/huggingface:/root/.cache/huggingface \
   -e PORT=8000 \
-  -e WORKERS=16 \
+  -e WORKERS=1 \
   -e REQUEST_BATCH_SIZE=32 \
   -e MAX_BATCH_SIZE=16 \
-  moondream
+  moondream_server
 
-# Run with persistent cache directories
-docker run -p 8000:8000 \
-  -v $(pwd)/model_cache:/tmp/model_cache \
-  -v $(pwd)/ipex_cache:/tmp/ipex_cache \
-  -v $(pwd)/torch_cache:/tmp/torch_cache \
-  moondream
 ```
 
 The server will be available at `http://localhost:8000` by default.
@@ -66,71 +65,37 @@ TORCH_COMPILE=true
 OMP_NUM_THREADS=28
 HOST="0.0.0.0"
 PORT=8000
-WORKERS=64
+WORKERS=1
 REQUEST_BATCH_SIZE=32
 MAX_BATCH_SIZE=16
 DEVICE_ID=0
 BF16_MODE=true
 MODEL_CACHE_DIR=/tmp/model_cache
+MOONDREAM_ENABLE_OPTIMIZATION=1
 ```
 
 You can override any of these values when running the container using the `-e` flag.
 
-## Server Capabilities
+### Server Configuration
 
-### Processing Modes
+#### Workers
 
-#### Synchronous Processing
-- **Best for**: Interactive applications, immediate responses, simple requests
-- **Endpoints**: `/caption`, `/query`, `/detect`, `/point`, `/batch`
-- **Behavior**: Blocks until processing completes, returns results directly
-- **Use when**: Response times are expected to be short (<5 seconds) or when client needs immediate results
+The `WORKERS` setting controls how many Uvicorn worker processes will be spawned. For XPU-based inference:
 
-#### Asynchronous Processing
-- **Best for**: Long-running tasks, large batches, background processing
-- **Endpoints**: `/batch/async`
-- **Behavior**: Returns a job ID immediately, client can poll for results using `/batch/status/{job_id}`
-- **Use when**: Processing multiple images, running complex operations, or when response times might exceed client timeouts
+- **WORKERS=1** (recommended): Creates a single worker process that loads the model once. This is optimal for GPU workloads as it maximizes available GPU memory for a single model instance.
+- **WORKERS>1**: Creates multiple worker processes, each loading its own copy of the model. This is generally not recommended for XPU workloads as it divides GPU memory between multiple model instances and can lead to out-of-memory errors and compute starving.
 
-### Features
+Since the server uses FastAPI with async endpoints, a single worker can efficiently handle multiple concurrent requests using asyncio's event loop, even with `WORKERS=1`.
 
-#### Adaptive Batching
-- Automatically groups similar requests to optimize GPU hits (sequential op with request batching)
-- Dynamically adjusts batch sizes based on available resources
-- Reduces latency by processing multiple requests in parallel when possible
-- Configurable via `REQUEST_BATCH_SIZE`, `MAX_BATCH_SIZE`, and `BATCH_TIMEOUT` environment variables
+#### IPEX Optimization Toggle
 
-#### Resource Management
--  Memory management to prevent OOM errors
-- Automatic cleanup of completed jobs based on configurable retention policies
-- Graceful degradation under heavy load
-- Health monitoring via the `/health` endpoint
+The `MOONDREAM_ENABLE_OPTIMIZATION` environment variable controls whether IPEX optimizations are applied to the model:
 
-#### High-Performance Request Handling
--  In-memory queuing system
-- Concurrent request processing with thread pooling
-- Efficient request batching with dynamic timeout management
-- Optimized for high-throughput / low latency scenarios with minimal overhead
-- Robust error handling and recovery mechanisms
+- **MOONDREAM_ENABLE_OPTIMIZATION=1** (default): Enables IPEX optimizations for better performance on Intel GPUs.
+- **MOONDREAM_ENABLE_OPTIMIZATION=0**: Disables IPEX optimizations, using the model as-is.
 
-### Performance Optimization
+This toggle is useful for benchmarking and comparing performance with and without optimizations. Accepted values are `1`, `true`, `yes`, `on` for enabling, and `0`, `false`, `no`, `off` for disabling (case-insensitive).
 
-#### For Low Latency (Faster Response Times)
-- Use individual endpoints (`/caption`, `/query`, `/detect`, `/point`) for single operations
-- Set `BATCH_TIMEOUT=0.0` to process requests immediately without waiting for batching
-- Reduce `MAX_BATCH_SIZE` to 1-4 for quicker processing of individual requests
-- Increase `WORKERS` for more concurrent request handling
-
-#### For High Throughput (Maximum Processing Volume)
-- Use `/batch` for synchronous batch processing of multiple images
-- Use `/batch/async` for very large batches or background processing
-- Increase `REQUEST_BATCH_SIZE` and `MAX_BATCH_SIZE` (16-32) to process more images per batch
-- Set `BATCH_TIMEOUT=0.1` to collect more requests into batches
-
-#### Balanced Approach
-- Use default settings which balance latency and throughput
-- Adjust `MAX_CONCURRENCY` to match your hardware capabilities
-- Monitor the `/health` endpoint to track resource utilization
 
 ## Using the Demo Client
 
